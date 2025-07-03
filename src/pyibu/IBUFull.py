@@ -1,20 +1,21 @@
-from utils.data_utils import *
-from src.IBUBase import IBUBase
+from .utils.data_utils import vec_to_dict, counts_to_vec_full, normalize_vec, unif_dense
+from .IBUBase import IBUBase
 from typing import Union, List, Tuple
 from functools import partial
 from jax import jit
 from tqdm import tqdm
+import numpy as np
+import jax.numpy as jnp
+import tensorflow as tf
 
 
 class IBUFull(IBUBase):
-
     def __init__(self, mats_raw: List[np.ndarray], params: dict):
+        self._num_qubits = params["num_qubits"]
+        self._library = params["library"]
+        self._use_log = params["use_log"]
 
-        self._num_qubits = params['num_qubits']
-        self._library = params['library']
-        self._use_log = params['use_log']
-
-        self._verbose = params['verbose']
+        self._verbose = params["verbose"]
 
         self._mats = self.mats_to_kronstruct(mats_raw, transpose=False)
         self._matsT = self.mats_to_kronstruct(mats_raw, transpose=True)
@@ -54,9 +55,9 @@ class IBUFull(IBUBase):
     def init(self):
         if self._init is None:
             return self._init
-        if self.library == 'tensorflow':
+        if self.library == "tensorflow":
             t_init = tf.reshape(self._init, (-1, 1))
-        elif self.library == 'jax':
+        elif self.library == "jax":
             t_init = self._init.reshape(-1, 1).block_until_ready()
         else:
             t_init = self._init.reshape(-1, 1)
@@ -66,9 +67,9 @@ class IBUFull(IBUBase):
     def guess(self):
         if self._guess is None:
             return self._guess
-        if self.library == 'tensorflow':
+        if self.library == "tensorflow":
             t_guess = tf.reshape(self._guess, (-1, 1))
-        elif self.library == 'jax':
+        elif self.library == "jax":
             t_guess = self._guess.reshape(-1, 1).block_until_ready()
         else:
             t_guess = self._guess.reshape(-1, 1)
@@ -93,7 +94,7 @@ class IBUFull(IBUBase):
         space, and obs is a vector (not dict), it should be a vector of log
         probabilities.
         """
-        if type(obs) == dict:
+        if type(obs) is dict:
             if self.verbose:
                 print("Converting dictionary of counts to vector...")
             obs_vec = counts_to_vec_full(obs)
@@ -105,8 +106,9 @@ class IBUFull(IBUBase):
             print("Setting counts distribution...")
         self._obs = obs_vec
 
-    def generate_obs(self, t_raw: Union[np.ndarray, jnp.ndarray, tf.Tensor]) \
-            -> Union[np.ndarray, jnp.ndarray, tf.Tensor]:
+    def generate_obs(
+        self, t_raw: Union[np.ndarray, jnp.ndarray, tf.Tensor]
+    ) -> Union[np.ndarray, jnp.ndarray, tf.Tensor]:
         """
             Generates the distribution over bitstrings observed for a given
             ground truth probability distribution t_raw, with the noise model
@@ -126,9 +128,11 @@ class IBUFull(IBUBase):
 
         return obs_true
 
-    def initialize_guess(self, init: Union[None, list, dict, tuple, np.ndarray,
-                                           jnp.ndarray, tf.Tensor] = None,
-                         smoother: float = 0.0):
+    def initialize_guess(
+        self,
+        init: Union[None, list, dict, tuple, np.ndarray, jnp.ndarray, tf.Tensor] = None,
+        smoother: float = 0.0,
+    ):
         """
             Initialize a guess to be iterated with IBU. There are four ways of
             initializing:
@@ -153,37 +157,43 @@ class IBUFull(IBUBase):
         """
         if init is None:
             if self.verbose:
-                print("Initializing guess with uniform distribution over all "
-                      "bitstrings...")
-            t_init = unif_dense(2 ** self.num_qubits, library=self.library,
-                                use_log=self.use_log)
+                print(
+                    "Initializing guess with uniform distribution over all "
+                    "bitstrings..."
+                )
+            t_init = unif_dense(
+                2**self.num_qubits, library=self.library, use_log=self.use_log
+            )
 
-        elif type(init) == list or type(init) == tuple:
+        elif type(init) is list or type(init) is tuple:
             if self.verbose:
-                print(f"Initializing guess with uniform distribution over"
-                      f" {len(init)} bitstrings...")
+                print(
+                    f"Initializing guess with uniform distribution over"
+                    f" {len(init)} bitstrings..."
+                )
             obs_dict = {key: 1 for key in sorted(init)}
             t_init = counts_to_vec_full(obs_dict)
             t_init = normalize_vec(t_init, self.library, self.use_log)
-            t_init = (t_init + smoother) / (1 + smoother*(2**self.num_qubits))
+            t_init = (t_init + smoother) / (1 + smoother * (2**self.num_qubits))
 
-        elif type(init) == dict:
+        elif type(init) is dict:
             if self.verbose:
-                print(f"Initializing guess with empirical distribution from "
-                      f"dictionary of counts...")
+                print(
+                    "Initializing guess with empirical distribution from "
+                    "dictionary of counts..."
+                )
             t_init = counts_to_vec_full(init)
             t_init = normalize_vec(t_init, self.library, self.use_log)
-            t_init = (t_init + smoother) / (1 + smoother*(2**self.num_qubits))
+            t_init = (t_init + smoother) / (1 + smoother * (2**self.num_qubits))
 
         else:
             if self.verbose:
-                print(f"Initializing guess with given vector...")
-            t_init = (init + smoother) / (1 + smoother*(2**self.num_qubits))
-
+                print("Initializing guess with given vector...")
+            t_init = (init + smoother) / (1 + smoother * (2**self.num_qubits))
 
         self._init = t_init
 
-        if self.library == 'tensorflow':
+        if self.library == "tensorflow":
             self._guess = tf.Variable(t_init, trainable=False)
         else:
             self._guess = t_init
@@ -192,10 +202,11 @@ class IBUFull(IBUBase):
     #                     MATMUL WITH KRONECKER STRUCTURE
     ############################################################################
 
-    def kron_matmul(self, mat: Union[np.ndarray, jnp.ndarray,
-                                     tf.linalg.LinearOperatorKronecker],
-                    vec: Union[np.ndarray, jnp.ndarray, tf.Tensor]) \
-            -> Union[np.ndarray, jnp.ndarray, tf.Tensor]:
+    def kron_matmul(
+        self,
+        mat: Union[np.ndarray, jnp.ndarray, tf.linalg.LinearOperatorKronecker],
+        vec: Union[np.ndarray, jnp.ndarray, tf.Tensor],
+    ) -> Union[np.ndarray, jnp.ndarray, tf.Tensor]:
         """
             Dispatcher for fast matrix multiplication with a vector when the
             matrix is the kronecker product of N sub-matrices of identical
@@ -206,11 +217,11 @@ class IBUFull(IBUBase):
         :return: the product mat @ vec
         """
 
-        if self.library == 'tensorflow':
+        if self.library == "tensorflow":
             result = self._kron_matmul_tf(mat, vec)
-        elif self.library == 'jax':
+        elif self.library == "jax":
             result = self._kron_matmul_jax(mat, vec)
-        elif self.library == 'numpy':
+        elif self.library == "numpy":
             result = self._kron_matmul_numpy(mat, vec)
         else:
             raise "Unsupported library!"
@@ -218,8 +229,9 @@ class IBUFull(IBUBase):
         return result
 
     @tf.function
-    def _kron_matmul_tf(self, mat: tf.Tensor,
-                        vec: tf.linalg.LinearOperatorKronecker) -> tf.Tensor:
+    def _kron_matmul_tf(
+        self, mat: tf.Tensor, vec: tf.linalg.LinearOperatorKronecker
+    ) -> tf.Tensor:
         """
             Fast matrix multiplication (tensorflow) with a vector when the
             matrix is the kronecker product of N sub-matrices of identical
@@ -240,8 +252,7 @@ class IBUFull(IBUBase):
         return result
 
     @partial(jit, static_argnums=(0,))
-    def _kron_matmul_jax(self, mat: jnp.ndarray, vec: jnp.ndarray) \
-            -> jnp.ndarray:
+    def _kron_matmul_jax(self, mat: jnp.ndarray, vec: jnp.ndarray) -> jnp.ndarray:
         """
             Fast matrix multiplication (jax) with a vector when the matrix is
             the kronecker product of N sub-matrices of identical dimension.
@@ -280,10 +291,12 @@ class IBUFull(IBUBase):
     #                               TRAIN
     ############################################################################
 
-    def train(self, max_iters: int = 100, tol: float = 1e-4,
-              soln: Union[dict, List[str], jnp.ndarray, tf.Tensor] = None)\
-            -> Tuple[Union[jnp.ndarray, tf.Tensor], int,
-                     Union[jnp.ndarray, tf.Tensor]]:
+    def train(
+        self,
+        max_iters: int = 100,
+        tol: float = 1e-4,
+        soln: Union[dict, List[str], jnp.ndarray, tf.Tensor] = None,
+    ) -> Tuple[Union[jnp.ndarray, tf.Tensor], int, Union[jnp.ndarray, tf.Tensor]]:
         """
             Train IBU.
         :param max_iters: maximum number of iterations to run IBU for
@@ -307,7 +320,7 @@ class IBUFull(IBUBase):
         iteration = 0
         diff = tol + 1
         if self.verbose:
-            pbar = tqdm(total=max_iters, desc='IBU Iteration')
+            pbar = tqdm(total=max_iters, desc="IBU Iteration")
         else:
             pbar = None
 
@@ -319,12 +332,12 @@ class IBUFull(IBUBase):
                 pbar.update()
 
         tracker = self.log_performance(tracker, soln, iteration)
-        if self.library == 'jax':
+        if self.library == "jax":
             if self.verbose:
                 print("Waiting for JAX to return control flow...")
             tracker.block_until_ready()
 
-        return self.guess, iteration, tracker[:iteration + 1, 0]
+        return self.guess, iteration, tracker[: iteration + 1, 0]
 
     def train_iter(self) -> float:
         """
@@ -332,9 +345,9 @@ class IBUFull(IBUBase):
         :return: the norm difference between the updated parameters and previous
                  parameters
         """
-        if self.library == 'tensorflow':
+        if self.library == "tensorflow":
             return self._train_iter_tf()
-        elif self.library == 'jax':
+        elif self.library == "jax":
             return self._train_iter_jax()
         else:
             raise "Unsupported library!"
@@ -355,8 +368,9 @@ class IBUFull(IBUBase):
             # if adding/subtracting from infinity!
             eq1 = self.obs - obs_guess
             eq2 = self._kron_matmul_tf(self._matsT, eq1)
-            diff = tf.linalg.norm(tf.math.exp(self._guess + eq2) -
-                                  tf.math.exp(self._guess), ord=1)
+            diff = tf.linalg.norm(
+                tf.math.exp(self._guess + eq2) - tf.math.exp(self._guess), ord=1
+            )
             self._guess.assign(self._guess + eq2)
             return diff
         else:
@@ -382,8 +396,9 @@ class IBUFull(IBUBase):
             eq1 = self.obs - obs_guess
             eq1 = jnp.nan_to_num(eq1)
             eq2 = self._kron_matmul_jax(self._matsT, eq1)
-            diff = jnp.linalg.norm(jnp.exp(self._guess + eq2)
-                                   - jnp.exp(self._guess), ord=1)
+            diff = jnp.linalg.norm(
+                jnp.exp(self._guess + eq2) - jnp.exp(self._guess), ord=1
+            )
             self._guess = self._guess + eq2
         else:
             eq1 = jnp.divide(self.obs, obs_guess)
@@ -398,8 +413,7 @@ class IBUFull(IBUBase):
     #                                LOGGING
     ############################################################################
 
-    def initialize_tracker(self, max_iters: int) \
-            -> Union[jnp.ndarray, tf.Variable]:
+    def initialize_tracker(self, max_iters: int) -> Union[jnp.ndarray, tf.Variable]:
         """
             Initialize jax ndarray or tensorflow Tensor of length max_iters
             to track progress after each iteration of IBU.
@@ -407,16 +421,19 @@ class IBUFull(IBUBase):
         :return: a jax ndarray/tensorflow tensor of zeros
         """
 
-        if self.library == 'tensorflow':
+        if self.library == "tensorflow":
             return np.zeros([max_iters, 1])
-        elif self.library == 'jax':
+        elif self.library == "jax":
             return jnp.zeros([max_iters, 1])
         else:
             raise "Unsupported library!"
 
-    def log_performance(self, tracker: Union[jnp.ndarray, tf.Variable],
-                        soln: Union[dict, List[str], jnp.ndarray, tf.Tensor],
-                        idx: int) -> Union[jnp.ndarray, tf.Variable]:
+    def log_performance(
+        self,
+        tracker: Union[jnp.ndarray, tf.Variable],
+        soln: Union[dict, List[str], jnp.ndarray, tf.Tensor],
+        idx: int,
+    ) -> Union[jnp.ndarray, tf.Variable]:
         """
             Logs the performance of the current self._guess.
             If soln is a list of bitstrs, tracker tracks the probability
@@ -432,14 +449,14 @@ class IBUFull(IBUBase):
         :return: the updated tracker as jax ndarray/tensorflow Tensor.
         """
         if soln is not None:
-            if type(soln) == list or type(soln) == tuple:
+            if type(soln) is list or type(soln) is tuple:
                 res = self.get_prob(soln)
             else:
                 res = self.get_l1_error(soln)
 
-            if self.library == 'tensorflow':
+            if self.library == "tensorflow":
                 tracker[idx] = float(res)
-            elif self.library == 'jax':
+            elif self.library == "jax":
                 tracker = tracker.at[idx].set(res)
             else:
                 raise "Unsupported Library!"
@@ -454,7 +471,7 @@ class IBUFull(IBUBase):
         :return: a tf constant or jax DeviceArray of a float representing
                  probability
         """
-        if self.library == 'tensorflow':
+        if self.library == "tensorflow":
             prob = tf.constant(0.0, dtype=tf.double)
             for sol in soln:
                 if self.use_log:
@@ -462,7 +479,7 @@ class IBUFull(IBUBase):
                 else:
                     prob += self._guess[int(sol[::-1], 2)]
             return prob
-        elif self.library == 'jax':
+        elif self.library == "jax":
             prob = jnp.zeros([1, 1])
             for sol in soln:
                 if self.use_log:
@@ -483,25 +500,25 @@ class IBUFull(IBUBase):
                      bitstrings to their true probabilities/log probabilities
         :return: float, norm error between guess and provided soln
         """
-        if self.library == 'jax':
-            if type(soln) == dict:
-                guess_copy = (jnp.copy(self.guess),
-                              jnp.exp(self.guess))[self.use_log]
+        if self.library == "jax":
+            if type(soln) is dict:
+                guess_copy = (jnp.copy(self.guess), jnp.exp(self.guess))[self.use_log]
                 for key, val in soln.items():
                     soln_prob = (-val, -jnp.exp(val))[self.use_log]
                     guess_copy = guess_copy.at[int(key[::-1], 2)].add(soln_prob)
                 err = jnp.linalg.norm(guess_copy, ord=1)
             else:
                 if self.use_log:
-                    err = jnp.linalg.norm(jnp.exp(self.guess) - jnp.exp(soln),
-                                          ord=1)
+                    err = jnp.linalg.norm(jnp.exp(self.guess) - jnp.exp(soln), ord=1)
                 else:
                     err = jnp.linalg.norm(self.guess - soln, ord=1)
 
-        elif self.library == 'tensorflow':
-            if type(soln) == dict:
-                guess_cp = (tf.Variable(tf.identity(self.guess)),
-                            tf.Variable(tf.math.exp(self.guess)))[self.use_log]
+        elif self.library == "tensorflow":
+            if type(soln) is dict:
+                guess_cp = (
+                    tf.Variable(tf.identity(self.guess)),
+                    tf.Variable(tf.math.exp(self.guess)),
+                )[self.use_log]
                 for key, val in soln.items():
                     soln_prob = (-val, -tf.math.exp(val))[self.use_log]
                     rev_key = int(key[::-1], 2)
@@ -509,8 +526,9 @@ class IBUFull(IBUBase):
                 err = tf.linalg.norm(guess_cp, ord=1)
             else:
                 if self.use_log:
-                    err = tf.linalg.norm(tf.math.exp(self.guess)
-                                         - tf.math.exp(soln), ord=1)
+                    err = tf.linalg.norm(
+                        tf.math.exp(self.guess) - tf.math.exp(soln), ord=1
+                    )
                 else:
                     err = tf.linalg.norm(self.guess - soln, ord=1)
 
@@ -529,17 +547,18 @@ class IBUFull(IBUBase):
         probabilities/log probabilities
         :return: float, norm error between guess and provided soln
         """
-        if self.library == 'jax':
-            guess_copy = (jnp.copy(self.guess),
-                          jnp.exp(self.guess))[self.use_log]
+        if self.library == "jax":
+            guess_copy = (jnp.copy(self.guess), jnp.exp(self.guess))[self.use_log]
             for key, val in soln.items():
                 soln_prob = (-val, -jnp.exp(val))[self.use_log]
                 guess_copy = guess_copy.at[int(key[::-1], 2)].add(soln_prob)
             err = jnp.linalg.norm(guess_copy, ord=jnp.inf)
 
-        elif self.library == 'tensorflow':
-            guess_cp = (tf.Variable(tf.identity(self.guess)),
-                        tf.Variable(tf.math.exp(self.guess)))[self.use_log]
+        elif self.library == "tensorflow":
+            guess_cp = (
+                tf.Variable(tf.identity(self.guess)),
+                tf.Variable(tf.math.exp(self.guess)),
+            )[self.use_log]
             for key, val in soln.items():
                 soln_prob = (-val, -tf.math.exp(val))[self.use_log]
                 rev_key = int(key[::-1], 2)
@@ -555,8 +574,9 @@ class IBUFull(IBUBase):
     #                                 UTILS
     ############################################################################
 
-    def mats_to_kronstruct(self, mats_raw: List[np.ndarray], transpose: bool) \
-            -> Union[jnp.ndarray, tf.linalg.LinearOperatorKronecker]:
+    def mats_to_kronstruct(
+        self, mats_raw: List[np.ndarray], transpose: bool
+    ) -> Union[jnp.ndarray, tf.linalg.LinearOperatorKronecker]:
         """
             Helper function to convert list of numpy matrices of single-qubit
             error probabilities to jax/tensorflow tensor.
@@ -567,16 +587,17 @@ class IBUFull(IBUBase):
         :return: jax ndarray or tensorflow LinearOperatorKronecker
         """
 
-        if self.library == 'tensorflow':
+        if self.library == "tensorflow":
             if transpose:
-                kronmats = [tf.linalg.LinearOperatorFullMatrix(
-                    tf.transpose(mat)) for mat in mats_raw]
+                kronmats = [
+                    tf.linalg.LinearOperatorFullMatrix(tf.transpose(mat))
+                    for mat in mats_raw
+                ]
             else:
-                kronmats = [tf.linalg.LinearOperatorFullMatrix(mat)
-                            for mat in mats_raw]
+                kronmats = [tf.linalg.LinearOperatorFullMatrix(mat) for mat in mats_raw]
             kronmats = tf.linalg.LinearOperatorKronecker(kronmats)
 
-        elif self.library == 'jax':
+        elif self.library == "jax":
             if transpose:
                 kronmats = jnp.array([mat.transpose() for mat in mats_raw])
             else:
@@ -586,13 +607,13 @@ class IBUFull(IBUBase):
 
         return kronmats
 
-    def trace_out(self,  idx):
+    def trace_out(self, idx):
         result = jnp.transpose(self.guess)  # 1 x 2**n
         j = 1
         for i in jnp.arange(self.num_qubits - 1, -1, -1):
-            result = jnp.reshape(result, (2 ** (self.num_qubits-j), 2))
+            result = jnp.reshape(result, (2 ** (self.num_qubits - j), 2))
             if i == idx:
                 result = jnp.transpose(result).sum(0)  # 2 x 2**n-1
                 j = 2
-        result = jnp.reshape(result, (2 ** (self.num_qubits-1), 1))
+        result = jnp.reshape(result, (2 ** (self.num_qubits - 1), 1))
         return result

@@ -1,0 +1,26 @@
+[project]
+authors = [{name = "Eddie Lin", email = "eddielin0926@gmail.com"}]
+dependencies = []
+name = "pyibu"
+requires-python = ">= 3.11"
+version = "0.1.0"
+
+[build-system]
+build-backend = "hatchling.build"
+requires = ["hatchling"]
+
+[tool.pixi.project]
+channels = ["conda-forge"]
+platforms = ["osx-arm64"]
+
+[tool.pixi.pypi-dependencies]
+pyibu = { path = ".", editable = true }
+
+[tool.pixi.tasks]
+
+[tool.pixi.dependencies]
+jax = ">=0.5.2,<0.6"
+numpy = ">=2.3.1,<3"
+qiskit = ">=2.1.0,<3"
+tensorflow = ">=2.18.0,<3"
+tqdm = ">=4.67.1,<5"

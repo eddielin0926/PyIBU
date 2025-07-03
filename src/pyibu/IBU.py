@@ -1,5 +1,5 @@
-from src.IBUFull import IBUFull
-from src.IBUReduced import IBUReduced
+from .IBUFull import IBUFull
+from .IBUReduced import IBUReduced
 import numpy as np
 from typing import List, Union
 

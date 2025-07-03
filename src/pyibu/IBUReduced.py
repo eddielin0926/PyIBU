@@ -1,31 +1,42 @@
-from src.IBUBase import IBUBase
+from .IBUBase import IBUBase
 from collections import namedtuple
-from typing import NamedTuple, Union
-from utils.data_utils import *
-from src.kron_matmul import *
+from typing import NamedTuple, Tuple, Union, List
+from .utils.data_utils import (
+    expand_strs_by_hamdist,
+    normalize_vec,
+    strs_to_mat,
+    unif_dense,
+    vec_to_dict,
+    resampler,
+    counts_to_vec_subspace,
+)
+from .kron_matmul import compact_kron_matmul, fast_kron_matmul
 from functools import partial
 from tqdm import tqdm
+import numpy as np
+import jax.numpy as jnp
+import tensorflow as tf
 
 
 class IBUReduced(IBUBase):
-
-    def __init__(self, mats_raw: List[np.ndarray], params: dict,
-                 mem_constrained: bool = False):
-
-        self._num_qubits = params['num_qubits']
-        self._library = params['library']
-        self._use_log = params['use_log']
+    def __init__(
+        self, mats_raw: List[np.ndarray], params: dict, mem_constrained: bool = False
+    ):
+        self._num_qubits = params["num_qubits"]
+        self._library = params["library"]
+        self._use_log = params["use_log"]
         self.mem_constrained = mem_constrained
 
-        self._verbose = params['verbose']
+        self._verbose = params["verbose"]
 
         self._mats = self.mats_to_kronstruct(mats_raw)
         self._obs = None
         self._init = None
         self._guess = None
-        self.ReducedBitstrs = namedtuple('ReducedBitstrs',
-                                         ['obs_bitstrs', 'obs_mat',
-                                          'exp_bitstrs', 'exp_mat', 'obs_vec'])
+        self.ReducedBitstrs = namedtuple(
+            "ReducedBitstrs",
+            ["obs_bitstrs", "obs_mat", "exp_bitstrs", "exp_mat", "obs_vec"],
+        )
 
     @property
     def num_qubits(self):
@@ -61,9 +72,9 @@ class IBUReduced(IBUBase):
     def init(self):
         if self._init is None:
             return self._init
-        if self.library == 'tensorflow':
+        if self.library == "tensorflow":
             t_init = tf.reshape(self._init, (-1, 1))
-        elif self.library == 'jax':
+        elif self.library == "jax":
             t_init = self._init.reshape(-1, 1).block_until_ready()
         else:
             t_init = self._init.reshape(-1, 1)
@@ -73,9 +84,9 @@ class IBUReduced(IBUBase):
     def guess(self):
         if self._guess is None:
             return self._guess
-        if self.library == 'tensorflow':
+        if self.library == "tensorflow":
             t_guess = tf.reshape(self._guess, (-1, 1))
-        elif self.library == 'jax':
+        elif self.library == "jax":
             t_guess = self._guess.reshape(-1, 1).block_until_ready()
         else:
             t_guess = self._guess.reshape(-1, 1)
@@ -100,15 +111,16 @@ class IBUReduced(IBUBase):
                          to which need to be tracked
         called ReducedBitstrs (see self.process_obs_dict())
         """
-        if type(obs) == dict:
+        if type(obs) is dict:
             if self.verbose:
                 print("Processing dictionary of counts...")
             obs = self.process_obs_dict(obs, ham_dist)
 
         self._obs = obs
 
-    def generate_obs(self, t_raw: jnp.ndarray, num_resamples: int = 1000,
-                     ham_dist: int = 1):
+    def generate_obs(
+        self, t_raw: jnp.ndarray, num_resamples: int = 1000, ham_dist: int = 1
+    ):
         """
             Using the single-qubit error matrices, generate
         :param t_raw: a 2^N x 1 jax ndarray of the true distribution over
@@ -123,15 +135,16 @@ class IBUReduced(IBUBase):
         if self.verbose:
             print("Generating noisy distribution over counts...")
         obs_true = self.kron_matmul_full(self._mats, t_raw)
-        obs_dict = resampler(num_resamples, obs_true, self.num_qubits,
-                             self.use_log)
+        obs_dict = resampler(num_resamples, obs_true, self.num_qubits, self.use_log)
         obs = self.process_obs_dict(obs_dict, ham_dist)
 
         return obs
 
-    def initialize_guess(self, init: Union[None, list, dict, tuple,
-                                           jnp.ndarray] = None,
-                         smoother: float = 0.0):
+    def initialize_guess(
+        self,
+        init: Union[None, list, dict, tuple, jnp.ndarray] = None,
+        smoother: float = 0.0,
+    ):
         """
             Initialize a guess to be iterated with IBU. There are four ways of
             initializing:
@@ -155,82 +168,89 @@ class IBUReduced(IBUBase):
         """
         if init is None:
             if self.verbose:
-                print("Initializing guess with uniform distribution over the "
-                      "expanded set of bitstrings...")
-            t_init = unif_dense(len(self._obs.exp_bitstrs),
-                                library=self.library, use_log=self.use_log)
-        elif type(init) == list or type(init) == tuple:
+                print(
+                    "Initializing guess with uniform distribution over the "
+                    "expanded set of bitstrings..."
+                )
+            t_init = unif_dense(
+                len(self._obs.exp_bitstrs), library=self.library, use_log=self.use_log
+            )
+        elif type(init) is list or type(init) is tuple:
             if self.verbose:
-                print(f"Initializing guess with uniform distribution over"
-                      f" {len(init)} bitstrings...")
+                print(
+                    f"Initializing guess with uniform distribution over"
+                    f" {len(init)} bitstrings..."
+                )
             obs_dict = {key: 1 for key in init}
-            t_init = counts_to_vec_subspace(obs_dict, self._obs.exp_bitstrs,
-                                            self.verbose)
-            t_init = normalize_vec(t_init + smoother, self.library,
-                                   self.use_log)
-            t_init = (t_init + smoother) / (1 + smoother*(2**self.num_qubits))
-        elif type(init) == dict:
+            t_init = counts_to_vec_subspace(
+                obs_dict, self._obs.exp_bitstrs, self.verbose
+            )
+            t_init = normalize_vec(t_init + smoother, self.library, self.use_log)
+            t_init = (t_init + smoother) / (1 + smoother * (2**self.num_qubits))
+        elif type(init) is dict:
             if self.verbose:
-                print(f"Initializing guess with empirical distribution from "
-                      f"dictionary of counts...")
-            t_init = counts_to_vec_subspace(init, self._obs.exp_bitstrs,
-                                            self.verbose)
+                print(
+                    "Initializing guess with empirical distribution from "
+                    "dictionary of counts..."
+                )
+            t_init = counts_to_vec_subspace(init, self._obs.exp_bitstrs, self.verbose)
             t_init = normalize_vec(t_init, self.library, self.use_log)
-            t_init = (t_init + smoother) / (1 + smoother*(t_init.shape[0]))
+            t_init = (t_init + smoother) / (1 + smoother * (t_init.shape[0]))
         else:
             if self.verbose:
-                print(f"Initializing guess with given vector...")
+                print("Initializing guess with given vector...")
             t_init = init
 
         self._init = t_init
-        if self.library == 'tensorflow':
+        if self.library == "tensorflow":
             self._guess = tf.Variable(t_init, trainable=False)
         else:
             self._guess = t_init
 
     def reduce_to_top_guess(self, k: int):
         """
-            Reduce the number of tracked bitstrings in self._obs.exp_bitstrs
-            to just the k bitstrings with the highest probabilities (given in
-            self._guess).
+        Reduce the number of tracked bitstrings in self._obs.exp_bitstrs
+        to just the k bitstrings with the highest probabilities (given in
+        self._guess).
         """
         if k is None:
             k = len(self._obs.obs_bitstrs)
-        inds = jnp.array(np.argpartition(np.array(self._guess).reshape(-1),
-                                         -k)[-k:])
+        inds = jnp.array(np.argpartition(np.array(self._guess).reshape(-1), -k)[-k:])
         self._guess = self._guess[inds]
         self._guess = self._guess / jnp.sum(self._guess)
         exp_bitstrs = [self._obs.exp_bitstrs[s] for s in inds]
         exp_mat = self._obs.exp_mat[inds, :]
-        self._obs = self.ReducedBitstrs(self._obs.obs_bitstrs,
-                                        self._obs.obs_mat, exp_bitstrs,
-                                        exp_mat, self._obs.obs_vec)
+        self._obs = self.ReducedBitstrs(
+            self._obs.obs_bitstrs,
+            self._obs.obs_mat,
+            exp_bitstrs,
+            exp_mat,
+            self._obs.obs_vec,
+        )
 
     ############################################################################
     #                     MATMUL WITH KRONECKER STRUCTURE
     ############################################################################
 
-    def kron_matmul_full(self, mat: jnp.ndarray,
-                         vec: jnp.ndarray) -> jnp.ndarray:
+    def kron_matmul_full(self, mat: jnp.ndarray, vec: jnp.ndarray) -> jnp.ndarray:
         """
-            Kronecker matrix multiplication dispatcher WITHOUT any subspace
-            reduction; used to generate_obs(). See kron_matmul() in IBUFull.py
-            for more details.
+        Kronecker matrix multiplication dispatcher WITHOUT any subspace
+        reduction; used to generate_obs(). See kron_matmul() in IBUFull.py
+        for more details.
         """
 
-        if self.library == 'jax':
+        if self.library == "jax":
             result = self._kron_matmul_jax_full(mat, vec)
         else:
             raise "Unsupported library!"
 
         return result
 
-    def _kron_matmul_jax_full(self, mat: jnp.ndarray,
-                              vec: jnp.ndarray) -> jnp.ndarray:
+    def _kron_matmul_jax_full(self, mat: jnp.ndarray, vec: jnp.ndarray) -> jnp.ndarray:
         """
-            Kronecker matrix multiplication in jax WITHOUT any subspace
-            reduction; used to generate_obs(). See kron_matmul_jax() in
-            IBUFull.py for more details.
+        Kronecker matrix multiplication in jax WITHOUT any subspace
+        reduction; used to generate_obs(). See kron_matmul_jax() in
+        IBUFull.py for more details.
         """
 
         if self.use_log:
@@ -259,11 +279,13 @@ class IBUReduced(IBUBase):
     #                       TRAIN AND ITERATION LOOPS
     ############################################################################
 
-    def train(self, max_iters: int = 100,
-              tol: float = 1e-4,
-              soln: Union[None, list, dict] = None,
-              hd_reduce: Tuple[int, int] = (None, None))\
-            -> Tuple[jnp.ndarray, int, jnp.ndarray]:
+    def train(
+        self,
+        max_iters: int = 100,
+        tol: float = 1e-4,
+        soln: Union[None, list, dict] = None,
+        hd_reduce: Tuple[int, int] = (None, None),
+    ) -> Tuple[jnp.ndarray, int, jnp.ndarray]:
         """
             Train IBU.
         :param max_iters: maximum number of iterations to run IBU for
@@ -291,7 +313,7 @@ class IBUReduced(IBUBase):
         iteration = 0
         diff = tol + 1
         if self.verbose:
-            pbar = tqdm(total=max_iters, desc='IBU Iteration')
+            pbar = tqdm(total=max_iters, desc="IBU Iteration")
         else:
             pbar = None
         if hd_reduce[0] is not None and hd_reduce[0] == -1:
@@ -309,11 +331,11 @@ class IBUReduced(IBUBase):
                 pbar.update()
 
         tracker = self.log_performance(tracker, soln, iteration)
-        if self.library == 'jax':
+        if self.library == "jax":
             if self.verbose:
                 print("Waiting for JAX to return control flow...")
             tracker.block_until_ready()
-        return self.guess, iteration, tracker[:iteration + 1, 0]
+        return self.guess, iteration, tracker[: iteration + 1, 0]
 
     def train_iter(self) -> jnp.float32:
         """
@@ -322,7 +344,7 @@ class IBUReduced(IBUBase):
         :return: the norm difference between the updated parameters and previous
                  parameters
         """
-        if self.library == 'jax':
+        if self.library == "jax":
             self._guess, diff = self._train_iter_jax()
             return diff
         else:
@@ -338,52 +360,76 @@ class IBUReduced(IBUBase):
         """
         if self.use_log:
             if self.mem_constrained:
-                return self._train_iter_jax_log_compact(self._mats, self._guess,
-                                                        self._obs.exp_mat,
-                                                        self._obs.obs_mat,
-                                                        self._obs.obs_vec)
+                return self._train_iter_jax_log_compact(
+                    self._mats,
+                    self._guess,
+                    self._obs.exp_mat,
+                    self._obs.obs_mat,
+                    self._obs.obs_vec,
+                )
             else:
                 try:
-                    return self._train_iter_jax_log_fast(self._mats,
-                                                         self._guess,
-                                                         self._obs.exp_mat,
-                                                         self._obs.obs_mat,
-                                                         self._obs.obs_vec)
+                    return self._train_iter_jax_log_fast(
+                        self._mats,
+                        self._guess,
+                        self._obs.exp_mat,
+                        self._obs.obs_mat,
+                        self._obs.obs_vec,
+                    )
                 except:
-                    print("May have run into memory issues, switching to memory" 
-                          " efficient implementation...")
+                    print(
+                        "May have run into memory issues, switching to memory"
+                        " efficient implementation..."
+                    )
                     self.mem_constrained = True
-                    return self._train_iter_jax_log_compact(self._mats,
-                                                            self._guess,
-                                                            self._obs.exp_mat,
-                                                            self._obs.obs_mat,
-                                                            self._obs.obs_vec)
+                    return self._train_iter_jax_log_compact(
+                        self._mats,
+                        self._guess,
+                        self._obs.exp_mat,
+                        self._obs.obs_mat,
+                        self._obs.obs_vec,
+                    )
         else:
             if self.mem_constrained:
-                return self._train_iter_jax_compact(self._mats, self._guess,
-                                                    self._obs.exp_mat,
-                                                    self._obs.obs_mat,
-                                                    self._obs.obs_vec)
+                return self._train_iter_jax_compact(
+                    self._mats,
+                    self._guess,
+                    self._obs.exp_mat,
+                    self._obs.obs_mat,
+                    self._obs.obs_vec,
+                )
             else:
                 try:
-                    return self._train_iter_jax_fast(self._mats, self._guess,
-                                                     self._obs.exp_mat,
-                                                     self._obs.obs_mat,
-                                                     self._obs.obs_vec)
+                    return self._train_iter_jax_fast(
+                        self._mats,
+                        self._guess,
+                        self._obs.exp_mat,
+                        self._obs.obs_mat,
+                        self._obs.obs_vec,
+                    )
                 except:
-                    print("May have run into memory issues, switching to memory" 
-                          " efficient implementation...")
+                    print(
+                        "May have run into memory issues, switching to memory"
+                        " efficient implementation..."
+                    )
                     self.mem_constrained = True
-                    return self._train_iter_jax_compact(self._mats, self._guess,
-                                                        self._obs.exp_mat,
-                                                        self._obs.obs_mat,
-                                                        self._obs.obs_vec)
+                    return self._train_iter_jax_compact(
+                        self._mats,
+                        self._guess,
+                        self._obs.exp_mat,
+                        self._obs.obs_mat,
+                        self._obs.obs_vec,
+                    )
 
     @partial(jit, static_argnums=0)
-    def _train_iter_jax_fast(self, mats: jnp.ndarray, guess: jnp.ndarray,
-                             exp_mat: jnp.ndarray, obs_mat: jnp.ndarray,
-                             obs_vec: jnp.ndarray) \
-            -> Tuple[jnp.ndarray, jnp.float32]:
+    def _train_iter_jax_fast(
+        self,
+        mats: jnp.ndarray,
+        guess: jnp.ndarray,
+        exp_mat: jnp.ndarray,
+        obs_mat: jnp.ndarray,
+        obs_vec: jnp.ndarray,
+    ) -> Tuple[jnp.ndarray, jnp.float32]:
         """
             A single (jax) iteration of IBU, optimized for speed and assuming
         no memory constraints.
@@ -404,44 +450,50 @@ class IBUReduced(IBUBase):
         # Update estimate of P(t)
         eq1 = obs_vec / obs_guess
         eq1 = jnp.nan_to_num(eq1)
-        eq2 = fast_kron_matmul(jnp.transpose(mats, (0, 2, 1)), eq1,
-                               obs_mat, exp_mat)
+        eq2 = fast_kron_matmul(jnp.transpose(mats, (0, 2, 1)), eq1, obs_mat, exp_mat)
         diff = jnp.linalg.norm((guess * eq2) - guess, ord=1)
         guess = guess * eq2
 
         return guess, diff
 
     @partial(jit, static_argnums=0)
-    def _train_iter_jax_compact(self, mats: jnp.ndarray, guess: jnp.ndarray,
-                                exp_mat: jnp.ndarray, obs_mat: jnp.ndarray,
-                                obs_vec: jnp.ndarray) \
-            -> Tuple[jnp.ndarray, jnp.float32]:
+    def _train_iter_jax_compact(
+        self,
+        mats: jnp.ndarray,
+        guess: jnp.ndarray,
+        exp_mat: jnp.ndarray,
+        obs_mat: jnp.ndarray,
+        obs_vec: jnp.ndarray,
+    ) -> Tuple[jnp.ndarray, jnp.float32]:
         """
-            A single (jax) iteration of IBU that is more memory efficient but
-            often slower than _train_iter_jax_fast(...). See that function for
-            documentation.
+        A single (jax) iteration of IBU that is more memory efficient but
+        often slower than _train_iter_jax_fast(...). See that function for
+        documentation.
         """
         obs_guess = compact_kron_matmul(mats, guess, exp_mat, obs_mat)
 
         # Update estimate of P(t)
         eq1 = obs_vec / obs_guess
         eq1 = jnp.nan_to_num(eq1)
-        eq2 = compact_kron_matmul(jnp.transpose(mats, (0, 2, 1)), eq1,
-                                  obs_mat, exp_mat)
+        eq2 = compact_kron_matmul(jnp.transpose(mats, (0, 2, 1)), eq1, obs_mat, exp_mat)
         diff = jnp.linalg.norm((guess * eq2) - guess, ord=1)
         guess = guess * eq2
 
         return guess, diff
 
     @partial(jit, static_argnums=0)
-    def _train_iter_jax_log_fast(self, mats: jnp.ndarray, guess: jnp.ndarray,
-                                 exp_mat: jnp.ndarray, obs_mat: jnp.ndarray,
-                                 obs_vec: jnp.ndarray) \
-            -> Tuple[jnp.ndarray, jnp.float32]:
+    def _train_iter_jax_log_fast(
+        self,
+        mats: jnp.ndarray,
+        guess: jnp.ndarray,
+        exp_mat: jnp.ndarray,
+        obs_mat: jnp.ndarray,
+        obs_vec: jnp.ndarray,
+    ) -> Tuple[jnp.ndarray, jnp.float32]:
         """
-            A single (jax) iteration of IBU, optimized for speed and assuming
-            no memory constraints, when the computation happens in log space.
-            See _train_iter_jax_log_fast(...) for full documentation.
+        A single (jax) iteration of IBU, optimized for speed and assuming
+        no memory constraints, when the computation happens in log space.
+        See _train_iter_jax_log_fast(...) for full documentation.
         """
         # Compute kron matmul in log space
         max_guess = jnp.max(guess)
@@ -456,8 +508,9 @@ class IBUReduced(IBUBase):
         # Again, kron matmul in log space
         max_eq1 = jnp.max(eq1)
         exp_eq1 = jnp.exp(eq1 - max_eq1)
-        eq2 = fast_kron_matmul(jnp.transpose(mats, (0, 2, 1)), exp_eq1, obs_mat,
-                               exp_mat)
+        eq2 = fast_kron_matmul(
+            jnp.transpose(mats, (0, 2, 1)), exp_eq1, obs_mat, exp_mat
+        )
         eq2 = jnp.log(eq2) + max_eq1
 
         diff = jnp.linalg.norm(jnp.exp(guess + eq2) - jnp.exp(guess), ord=1)
@@ -466,14 +519,18 @@ class IBUReduced(IBUBase):
         return guess, diff
 
     @partial(jit, static_argnums=0)
-    def _train_iter_jax_log_compact(self, mats: jnp.ndarray, guess: jnp.ndarray,
-                                    exp_mat: jnp.ndarray, obs_mat: jnp.ndarray,
-                                    obs_vec: jnp.ndarray) \
-            -> Tuple[jnp.ndarray, jnp.float32]:
+    def _train_iter_jax_log_compact(
+        self,
+        mats: jnp.ndarray,
+        guess: jnp.ndarray,
+        exp_mat: jnp.ndarray,
+        obs_mat: jnp.ndarray,
+        obs_vec: jnp.ndarray,
+    ) -> Tuple[jnp.ndarray, jnp.float32]:
         """
-            A single (jax) iteration of IBU that is more memory efficient but
-            often slower than _train_iter_jax_fast(...), when the computation
-            happens in log space. See that function for documentation.
+        A single (jax) iteration of IBU that is more memory efficient but
+        often slower than _train_iter_jax_fast(...), when the computation
+        happens in log space. See that function for documentation.
         """
         # Compute kron matmul in log space
         max_guess = jnp.max(guess)
@@ -488,8 +545,9 @@ class IBUReduced(IBUBase):
         # Again, kron matmul in log space
         max_eq1 = jnp.max(eq1)
         exp_eq1 = jnp.exp(eq1 - max_eq1)
-        eq2 = compact_kron_matmul(jnp.transpose(mats, (0, 2, 1)), exp_eq1,
-                                  obs_mat, exp_mat)
+        eq2 = compact_kron_matmul(
+            jnp.transpose(mats, (0, 2, 1)), exp_eq1, obs_mat, exp_mat
+        )
         eq2 = jnp.log(eq2) + max_eq1
 
         diff = jnp.linalg.norm(jnp.exp(guess + eq2) - jnp.exp(guess), ord=1)
@@ -508,13 +566,12 @@ class IBUReduced(IBUBase):
         :param max_iters: maximum number of iterations that may be tracked
         :return: a jax ndarray of zeros
         """
-        if self.library == 'jax':
+        if self.library == "jax":
             return jnp.zeros([max_iters, 1])
         else:
             raise "Unsupported library!"
 
-    def log_performance(self, tracker: jnp.ndarray, soln: Union[list, dict],
-                        idx: int):
+    def log_performance(self, tracker: jnp.ndarray, soln: Union[list, dict], idx: int):
         """
             Logs the performance of the current self._guess.
             If soln is a list of bitstrs, tracker tracks the total probability
@@ -534,7 +591,7 @@ class IBUReduced(IBUBase):
                 res = self.get_prob(soln)
             else:
                 res = self.get_l1_error(soln)
-            if self.library == 'jax':
+            if self.library == "jax":
                 tracker = tracker.at[idx].set(res)
             else:
                 raise "Unsupported Library!"
@@ -548,13 +605,12 @@ class IBUReduced(IBUBase):
         :param soln: A list of bitstrings for which to get total probability for
         :return: a jax DeviceArray of a float representing probability
         """
-        if self.library == 'jax':
+        if self.library == "jax":
             prob = jnp.zeros([1, 1])
             for sol in soln:
                 if self.use_log:
                     if sol in self._obs.exp_bitstrs:
-                        prob += jnp.exp(
-                            self._guess[self._obs.exp_bitstrs.index(sol)])
+                        prob += jnp.exp(self._guess[self._obs.exp_bitstrs.index(sol)])
                 else:
                     if sol in self._obs.exp_bitstrs:
                         prob += self._guess[self._obs.exp_bitstrs.index(sol)]
@@ -572,18 +628,17 @@ class IBUReduced(IBUBase):
                      or log probabilities
         :return: float, l1-norm error between guess and provided soln
         """
-        if self.library == 'jax':
+        if self.library == "jax":
             bitstrs_intsect = set(soln.keys()) & set(self._obs.exp_bitstrs)
             err = jnp.zeros([1, 1])
 
-            guess_copy = (jnp.copy(self._guess),
-                          jnp.exp(self._guess))[self.use_log]
+            guess_copy = (jnp.copy(self._guess), jnp.exp(self._guess))[self.use_log]
             for bitstr in soln.keys():
-                soln_prob = (-soln[bitstr],
-                             -jnp.exp(soln[bitstr]))[self.use_log]
+                soln_prob = (-soln[bitstr], -jnp.exp(soln[bitstr]))[self.use_log]
                 if bitstr in bitstrs_intsect:
-                    guess_copy = guess_copy.at[
-                        self._obs.exp_bitstrs.index(bitstr)].add(soln_prob)
+                    guess_copy = guess_copy.at[self._obs.exp_bitstrs.index(bitstr)].add(
+                        soln_prob
+                    )
                 else:
                     err += jnp.absolute(soln_prob)
             err += jnp.sum(jnp.absolute(guess_copy))
@@ -603,18 +658,17 @@ class IBUReduced(IBUBase):
                      or log probabilities
         :return: float, l_inf-norm error between guess and provided soln
         """
-        if self.library == 'jax':
+        if self.library == "jax":
             bitstrs_intsect = set(soln.keys()) & set(self._obs.exp_bitstrs)
             err = 0.0
 
-            guess_copy = (jnp.copy(self._guess),
-                          jnp.exp(self._guess))[self.use_log]
+            guess_copy = (jnp.copy(self._guess), jnp.exp(self._guess))[self.use_log]
             for bitstr in soln.keys():
-                soln_prob = (-soln[bitstr],
-                             -jnp.exp(soln[bitstr]))[self.use_log]
+                soln_prob = (-soln[bitstr], -jnp.exp(soln[bitstr]))[self.use_log]
                 if bitstr in bitstrs_intsect:
-                    guess_copy = guess_copy.at[
-                        self._obs.exp_bitstrs.index(bitstr)].add(soln_prob)
+                    guess_copy = guess_copy.at[self._obs.exp_bitstrs.index(bitstr)].add(
+                        soln_prob
+                    )
                 else:
                     err = max(jnp.absolute(soln_prob), err)
             err = max(jnp.max(jnp.absolute(guess_copy)), err)
@@ -637,7 +691,7 @@ class IBUReduced(IBUBase):
          bitstrings.
         :return: jax ndarray
         """
-        if self.library == 'jax':
+        if self.library == "jax":
             kronmats = jnp.array(mats_raw)
         else:
             raise "Unsupported library!"
@@ -671,14 +725,12 @@ class IBUReduced(IBUBase):
             desc_ham = f"Computing strings within Hamming radius {ham_dist}"
             desc_obs = "Encoding observed bitstrings as matrix"
             desc_exp = "Encoding expanded set of bitstrings as matrix"
-        exp_bitstrs = expand_strs_by_hamdist(obs_bitstrs, ham_dist,
-                                             desc=desc_ham)
+        exp_bitstrs = expand_strs_by_hamdist(obs_bitstrs, ham_dist, desc=desc_ham)
         exp_bitstrs = sorted(set(obs_bitstrs + exp_bitstrs))
         obs_vec = counts_to_vec_subspace(obs_dict, obs_bitstrs, self.verbose)
         obs_vec = normalize_vec(obs_vec, self.library, self.use_log)
         obs_mat = strs_to_mat(obs_bitstrs, self.library, desc=desc_obs)
         exp_mat = strs_to_mat(exp_bitstrs, self.library, desc=desc_exp)
-        obs = self.ReducedBitstrs(obs_bitstrs, obs_mat, exp_bitstrs,
-                                  exp_mat, obs_vec)
+        obs = self.ReducedBitstrs(obs_bitstrs, obs_mat, exp_bitstrs, exp_mat, obs_vec)
 
         return obs
