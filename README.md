@@ -4,6 +4,12 @@ This package implements iterative Bayesian unfolding for mitigation
 of measurement errors from quantum computers as described in the paper
 https://arxiv.org/pdf/2210.12284.pdf.
 
+## Installation
+
+```sh
+python -m pip install git+https://github.com/eddielin0926/PyIBU.git
+```
+
 ## IBU Quick Start
 
 Given a dictionary mapping bitstrings to observed counts `counts`, as well as
